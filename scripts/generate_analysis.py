@@ -107,7 +107,7 @@ function render(d) {
   h += `<div class="docsub">${esc(d.name)}<br>Generado ${esc((d.generated_at||'').slice(0,10))} &middot; motor mec&aacute;nico Sharpe Lab &middot; ${esc(d.sector_note||'')}</div>`;
   h += `<div class="kpis">
     <div class="kpi">Precio (${esc(cur)})<b>${fmtN(p.value)}</b></div>
-    <div class="kpi">Capitalizaci&oacute;n<b>${fmtM(d.market_cap_m)} ${esc(fcy)}</b></div>
+    <div class="kpi">Capitalizaci&oacute;n<b>${fmtM(d.market_cap_m)} ${esc(cur)}</b></div>
     <div class="kpi">Rango 52 semanas<b style="font-size:15px">${fmtN(d.week52 && d.week52.low)} - ${fmtN(d.week52 && d.week52.high)}</b></div>
   </div>`;
 
@@ -163,6 +163,7 @@ function render(d) {
   if (ps) h += rowN(['BPA usado', fmtN(ps.eps_used.low), fmtN(ps.eps_used.avg), fmtN(ps.eps_used.high)]);
   if (ps) h += rowN(['PER usado', ps.pe_used.p25+'x', ps.pe_used.median+'x', ps.pe_used.p75+'x']);
   h += `</tbody></table>`;
+  if (ps && ps.reliable === false) h += `<div class="flag warn"><span class="tag">PER no fiable &middot; excluido de la mezcla</span>El PER hist&oacute;rico (mediana ${fmtN(pe && pe.median, 1)}x) supera 2,5x el PER forward actual: en hipercrecimiento los PER pasados capturan la infravaloraci&oacute;n anterior y no son un ancla razonable. El objetivo mec&aacute;nico usa solo DCF.</div>`;
   if (pe) h += `<div class="note">PER hist&oacute;rico propio (${pe.n_years||0} a&ntilde;os): mediana ${fmtN(pe.median,1)}x, p25 ${fmtN(pe.p25,1)}x, p75 ${fmtN(pe.p75,1)}x.${pe.n_years===0?' Sin historia suficiente: bandas ancladas al PER forward actual (0,8x/1x/1,2x).':''}</div>`;
   const dc = v.dcf;
   h += `<table style="margin-top:10px"><thead><tr><th>DCF</th><th>Valor</th></tr></thead><tbody>`;
