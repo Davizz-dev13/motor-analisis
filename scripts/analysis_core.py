@@ -419,15 +419,34 @@ def compute_report(raw: dict) -> dict:
                 row.append(round(v, 2) if v else None)
             sens.append(row)
 
+    # Fiabilidad del PER historico: en hipercrecimiento la mediana trailing refleja
+    # que el mercado aun no descontaba la explosion del BPA; aplicarla al BPA forward
+    # cuenta el crecimiento dos veces. Si supera 2,5 veces el PER forward actual, los
+    # escenarios PER se marcan NO fiables y salen de la mezcla.
+    per_reliable = True
+    fwd_pe_now = (price / eps_next) if (price and eps_next and eps_next > 0) else None
+    if pe_hist and fwd_pe_now and pe_hist["median"] > 2.5 * fwd_pe_now:
+        per_reliable = False
+        if per_scen:
+            per_scen["reliable"] = False
+        quality.append(
+            f"PER historico NO fiable: mediana {pe_hist['median']:.1f}x frente a PER forward "
+            f"actual {fwd_pe_now:.1f}x (en hipercrecimiento el trailing cuenta el crecimiento "
+            f"dos veces). Los escenarios PER son solo referencia y no entran en la mezcla.")
+
     blend = None
-    if per_scen and dcf_val:
+    if per_scen and per_reliable and dcf_val:
         target = BLEND_W_PER * per_scen["central"] + BLEND_W_DCF * dcf_val
         blend = {
             "target": round(target, 2),
             "upside_pct": round((target / price - 1) * 100, 1) if price else None,
             "weights": f"{int(BLEND_W_PER*100)}/{int(BLEND_W_DCF*100)}",
         }
-    elif per_scen:
+    elif dcf_val:
+        blend = {"target": round(dcf_val, 2),
+                 "upside_pct": round((dcf_val / price - 1) * 100, 1) if price else None,
+                 "weights": "0/100 (PER no fiable)"}
+    elif per_scen and per_reliable:
         blend = {"target": per_scen["central"],
                  "upside_pct": round((per_scen["central"] / price - 1) * 100, 1) if price else None,
                  "weights": "solo PER (sin DCF)"}
@@ -535,9 +554,12 @@ def compute_report(raw: dict) -> dict:
                                 "grid": sens} if sens else None,
             "blend": blend,
             "method": ("PER: BPA consenso proximo ejercicio x multiplos historicos propios "
-                       "(p25/mediana/p75). DCF: margen FCF TTM sobre trayectoria de ventas "
-                       "(consenso ano 1, desvanecimiento a perpetuidad). Mezcla fija 60/40. "
-                       "Objetivo a valor de hoy, sin dividendos."),
+                       "(p25/mediana/p75); si la mediana historica supera 2,5 veces el PER "
+                       "forward actual se marca NO fiable (hipercrecimiento) y sale de la "
+                       "mezcla. DCF: margen FCF TTM sobre trayectoria de ventas (consenso "
+                       "ano 1 limitado a [-20%, +40%], desvanecimiento lineal a perpetuidad "
+                       "en 5 anos, descuento 9,5%, terminal 4%). Mezcla fija 60/40 cuando "
+                       "ambas patas son fiables. Objetivo a valor de hoy, sin dividendos."),
         },
         "flags": flags,
         "limits": LIMITS,
