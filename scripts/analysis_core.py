@@ -60,6 +60,26 @@ def _safe(fn, quality, label):
         return None
 
 
+def _est_to_records(df):
+    """DataFrame de estimaciones yfinance (filas=periodos 0q/+1q/0y/+1y, cols=metricas)
+    -> {metrica: [(periodo, valor)]}. Las etiquetas de periodo NO son fechas."""
+    if df is None or getattr(df, "empty", True):
+        return None
+    out = {}
+    for col in df.columns:
+        vals = []
+        for per, v in df[col].items():
+            try:
+                if v is None or (isinstance(v, float) and math.isnan(v)):
+                    continue
+                vals.append((str(per), float(v)))
+            except Exception:  # noqa: BLE001
+                continue
+        if vals:
+            out[str(col)] = vals
+    return out or None
+
+
 def _df_to_records(df):
     """DataFrame de yfinance (filas=partidas, cols=fechas) -> {partida: [(fecha, valor)]}."""
     if df is None or getattr(df, "empty", True):
@@ -117,8 +137,8 @@ def fetch_raw(ticker: str) -> dict:
         "q_balance": _df_to_records(q_bal),
         "q_cashflow": _df_to_records(q_cf),
         "a_cashflow": _df_to_records(a_cf),
-        "earnings_estimate": _df_to_records(est.T) if est is not None else None,
-        "revenue_estimate": _df_to_records(rev_est.T) if rev_est is not None else None,
+        "earnings_estimate": _est_to_records(est),
+        "revenue_estimate": _est_to_records(rev_est),
         "price_targets": targets,
         "annual_close_means": closes,
         "financial_currency": fin_ccy,
