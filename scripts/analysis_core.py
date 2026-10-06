@@ -176,9 +176,7 @@ def _fx_rate(pair: str, inverse_pair: str) -> float | None:
         d = yf.download(p, period="5d", interval="1d", progress=False)
         if not d.empty:
             c = d["Close"]
-            if hasattr(c, "get_level_values"):
-                c = c.get_level_values(0)
-            v = float(c.iloc[-1])
+            v = float(getattr(c, "values", c).flatten()[-1])
             return (1.0 / v) if inv else v
     return None
 
@@ -345,14 +343,34 @@ def compute_report(raw: dict) -> dict:
     pe_hist = None
     a_eps = _series(a_inc, "Diluted EPS", "Basic EPS")
     close_means = raw.get("annual_close_means") or {}
+    # Si reporta en otra divisa (ASML EUR, TSM TWD), el BPA historico es por
+    # accion ordinaria y el precio es del ADR: convierte con FX actual y ratio
+    # ADR aproximado (ordinarias = NI/EPS anual; ratio = ordinarias / acciones Yahoo).
+    fx_pe = None
+    if fin_ccy != price_ccy:
+        if fx:
+            sh_out = (raw.get("info") or {}).get("sharesOutstanding")
+            ni_a = _series(a_inc, "Net Income", "Net Income Common Stockholders")
+            if sh_out and ni_a and a_eps and a_eps[0][1] and a_eps[0][1] > 0:
+                ord_shares = ni_a[0][1] / a_eps[0][1]
+                if ord_shares > 0:
+                    fx_pe = fx * (ord_shares / sh_out)
+                    quality.append("PER historico convertido con tipo de cambio actual y "
+                                   "ratio ADR aproximado (NI/BPA entre acciones Yahoo): revisar a mano")
+        if fx_pe is None:
+            quality.append(f"sin conversion fiable {fin_ccy}->{price_ccy}: escenarios PER desactivados")
     pes = []
     for date_str, eps in a_eps:
         if eps is None or eps <= 0:
             continue
+        if fin_ccy != price_ccy and fx_pe is None:
+            continue
         year = date_str[:4]
         mean_close = close_means.get(year) or close_means.get(str(int(year) - 1))
         if mean_close:
-            pes.append(mean_close / eps)
+            denom = eps * fx_pe if fx_pe else eps
+            if denom > 0:
+                pes.append(mean_close / denom)
     if len(pes) >= 2:
         pes_s = sorted(pes)
         pe_hist = {
