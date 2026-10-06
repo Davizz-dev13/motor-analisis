@@ -25,8 +25,10 @@ DCF_DISCOUNT_GRID = [0.085, 0.095, 0.105]
 DCF_TERMINAL = 0.04           # crecimiento en perpetuidad central
 DCF_TERMINAL_GRID = [0.03, 0.04, 0.05]
 DCF_YEARS = 5
-BLEND_W_PER = 0.60            # 60% escenarios PER + 40% DCF (metodo del informe NVDA)
+BLEND_W_PER = 0.60            # 60% escenarios PER + 40% DCF: igual para las 15 empresas
 BLEND_W_DCF = 0.40
+PE_BAND = 1.5                 # el multiplo historico se acota a [1/1,5 ; 1,5] veces el PER forward actual
+FCF_YEARS = 3                 # ejercicios anuales + TTM para normalizar el margen FCF (capex incluido)
 
 # Universo tecnologico/semis (ampliable; David 2026-10-05)
 UNIVERSE = [
@@ -227,10 +229,14 @@ def _est_row(rec: dict | None, metric: str, period: str) -> float | None:
 
 def _dcf(fcf_ttm, rev_ttm, rev_growth_next_pct, net_cash, shares, fx,
          discount, terminal):
+    # fcf_ttm aqui es el FCF NORMALIZADO (margen medio TTM + ejercicios x ventas TTM):
+    # el capex pesado de un ciclo de inversion baja el margen en vez de eximir a la empresa.
     if fcf_ttm is None or rev_ttm in (None, 0) or not shares or shares <= 0:
         return None
-    if fcf_ttm <= 0 or rev_ttm <= 0:
+    if rev_ttm <= 0:
         return None
+    if fcf_ttm < 0:
+        fcf_ttm = 0.0
     g1 = max(-20.0, min(40.0, rev_growth_next_pct)) / 100.0 if rev_growth_next_pct else 0.10
     fcf_margin = fcf_ttm / rev_ttm
     rev = rev_ttm
@@ -386,70 +392,107 @@ def compute_report(raw: dict) -> dict:
             quality.append("PER historico insuficiente: bandas ancladas al PER forward actual (0,8x/1x/1,2x)")
 
     per_scen = None
+    pe_clamped = False
     if pe_hist and eps_next and eps_next > 0 and price:
+        fwd_now = price / eps_next
+        lo_pe, hi_pe = fwd_now / PE_BAND, fwd_now * PE_BAND
+        def _cl(x):
+            return max(lo_pe, min(hi_pe, x))
+        pe_u = {k: _cl(pe_hist[k]) for k in ("p25", "median", "p75")}
+        pe_clamped = any(abs(pe_u[k] - pe_hist[k]) > 1e-9 for k in pe_u)
         per_scen = {
-            "adverse": round((eps_next_low or eps_next * 0.9) * pe_hist["p25"], 2),
-            "central": round(eps_next * pe_hist["median"], 2),
-            "favorable": round((eps_next_high or eps_next * 1.1) * pe_hist["p75"], 2),
+            "adverse": round((eps_next_low or eps_next * 0.9) * pe_u["p25"], 2),
+            "central": round(eps_next * pe_u["median"], 2),
+            "favorable": round((eps_next_high or eps_next * 1.1) * pe_u["p75"], 2),
             "eps_used": {"low": eps_next_low, "avg": eps_next, "high": eps_next_high},
-            "pe_used": {"p25": round(pe_hist["p25"], 1), "median": round(pe_hist["median"], 1),
-                        "p75": round(pe_hist["p75"], 1)},
+            "pe_used": {"p25": round(pe_u["p25"], 1), "median": round(pe_u["median"], 1),
+                        "p75": round(pe_u["p75"], 1)},
+            "pe_hist_raw_median": round(pe_hist["median"], 1),
+            "pe_forward_now": round(fwd_now, 1),
+            "clamped": pe_clamped,
         }
+        if pe_clamped:
+            quality.append(
+                f"Multiplo PER acotado: mediana historica {pe_hist['median']:.1f}x frente a PER forward "
+                f"actual {fwd_now:.1f}x; el motor limita el multiplo a {1/PE_BAND:.2f}-{PE_BAND:.1f} veces el forward "
+                f"(gradual, sin saltos de metodo).")
     elif eps_next is not None and eps_next <= 0:
         quality.append("BPA estimado negativo: escenarios PER no aplicables")
 
-    # --- DCF ---
-    fcf_margin = (fcf_ttm / rev_ttm) if (fcf_ttm and rev_ttm) else None
+    # --- DCF (margen FCF normalizado: TTM + ultimos ejercicios, con capex) ---
+    a_cf = raw.get("a_cashflow")
+    a_rev = dict(_series(a_inc, "Total Revenue"))
+    a_fcf = dict(_series(a_cf, "Free Cash Flow"))
+    if not a_fcf:
+        _o = dict(_series(a_cf, "Operating Cash Flow", "Cash Flow From Continuing Operating Activities"))
+        _c = dict(_series(a_cf, "Capital Expenditure", "Capital Expenditures"))
+        a_fcf = {d: _o[d] + _c[d] for d in _o if d in _c}
+    margins = []
+    for d in sorted(set(a_fcf) & set(a_rev), reverse=True)[:FCF_YEARS]:
+        if a_rev[d]:
+            margins.append(a_fcf[d] / a_rev[d])
+    fcf_margin_ttm = (fcf_ttm / rev_ttm) if (fcf_ttm is not None and rev_ttm) else None
+    if fcf_margin_ttm is not None:
+        margins.append(fcf_margin_ttm)
+    fcf_margin = (sum(margins) / len(margins)) if margins else None
+    fcf_norm = (fcf_margin * rev_ttm) if (fcf_margin is not None and rev_ttm) else None
+    if fcf_margin is not None:
+        quality.append(f"Margen FCF normalizado {fcf_margin*100:.1f}% (media de {len(margins)} periodos: TTM + "
+                       f"{len(margins)-1 if fcf_margin_ttm is not None else len(margins)} ejercicios, ya neto de capex); "
+                       f"TTM solo: {('%.1f%%' % (fcf_margin_ttm*100)) if fcf_margin_ttm is not None else 'n/d'}")
     dcf_val = None
     if fin_ccy == price_ccy or fx:
-        dcf_val = _dcf(fcf_ttm, rev_ttm, rev_growth_next, net_cash, shares,
+        dcf_val = _dcf(fcf_norm, rev_ttm, rev_growth_next, net_cash, shares,
                        fx if fin_ccy != price_ccy else None, DCF_DISCOUNT, DCF_TERMINAL)
     elif shares:
         quality.append("DCF desactivado por falta de tipo de cambio")
-    if fcf_ttm is not None and fcf_ttm <= 0:
-        quality.append("FCF TTM negativo: DCF no aplicable")
+    if fcf_norm is not None and fcf_norm <= 0:
+        quality.append("Margen FCF normalizado <= 0 (capex absorbe la caja): el DCF solo valora la caja neta, sin flujos futuros")
 
     sens = []
     if dcf_val is not None:
         for r in DCF_DISCOUNT_GRID:
             row = []
             for tg in DCF_TERMINAL_GRID:
-                v = _dcf(fcf_ttm, rev_ttm, rev_growth_next, net_cash, shares,
+                v = _dcf(fcf_norm, rev_ttm, rev_growth_next, net_cash, shares,
                          fx if fin_ccy != price_ccy else None, r, tg)
                 row.append(round(v, 2) if v else None)
             sens.append(row)
 
-    # Fiabilidad del PER historico: en hipercrecimiento la mediana trailing refleja
-    # que el mercado aun no descontaba la explosion del BPA; aplicarla al BPA forward
-    # cuenta el crecimiento dos veces. Si supera 2,5 veces el PER forward actual, los
-    # escenarios PER se marcan NO fiables y salen de la mezcla.
-    per_reliable = True
-    fwd_pe_now = (price / eps_next) if (price and eps_next and eps_next > 0) else None
-    if pe_hist and fwd_pe_now and pe_hist["median"] > 2.5 * fwd_pe_now:
-        per_reliable = False
-        if per_scen:
-            per_scen["reliable"] = False
-        quality.append(
-            f"PER historico NO fiable: mediana {pe_hist['median']:.1f}x frente a PER forward "
-            f"actual {fwd_pe_now:.1f}x (en hipercrecimiento el trailing cuenta el crecimiento "
-            f"dos veces). Los escenarios PER son solo referencia y no entran en la mezcla.")
-
+    # Mezcla unica para las 15 empresas: 60% PER (multiplo acotado) + 40% DCF
+    # (margen FCF normalizado). Si falta una pata por datos, se dice en data_quality.
     blend = None
-    if per_scen and per_reliable and dcf_val:
+    if per_scen and dcf_val is not None:
         target = BLEND_W_PER * per_scen["central"] + BLEND_W_DCF * dcf_val
         blend = {
             "target": round(target, 2),
             "upside_pct": round((target / price - 1) * 100, 1) if price else None,
             "weights": f"{int(BLEND_W_PER*100)}/{int(BLEND_W_DCF*100)}",
         }
-    elif dcf_val:
+    elif dcf_val is not None:
         blend = {"target": round(dcf_val, 2),
                  "upside_pct": round((dcf_val / price - 1) * 100, 1) if price else None,
-                 "weights": "0/100 (PER no fiable)"}
-    elif per_scen and per_reliable:
+                 "weights": "solo DCF (falta la pata PER por datos)"}
+    elif per_scen:
         blend = {"target": per_scen["central"],
                  "upside_pct": round((per_scen["central"] / price - 1) * 100, 1) if price else None,
-                 "weights": "solo PER (sin DCF)"}
+                 "weights": "solo PER (falta la pata DCF por datos)"}
+
+    # Lectura individual: cada informe explica que tratamiento recibio y si sus dos patas
+    # son coherentes entre si (no se compara con otras empresas).
+    if blend and per_scen and dcf_val is not None and price:
+        gap = per_scen["central"] / dcf_val if dcf_val > 0 else None
+        if gap is None or gap > 2.0 or gap < 0.5:
+            quality.append(
+                f"Patas en desacuerdo: PER {per_scen['central']:.0f} vs DCF {dcf_val:.0f}"
+                f"{'' if gap is None else f' (x{gap:.1f})'}. El objetivo mezcla dos lecturas muy distintas: "
+                "confianza baja; mirar el rango entre ambas, no el punto.")
+    capex_cfo = (abs(capex_ttm) / cfo_ttm) if (capex_ttm is not None and cfo_ttm and cfo_ttm > 0) else None
+    if capex_cfo is not None and capex_cfo >= 0.6:
+        quality.append(
+            f"Empresa en ciclo de inversion: el capex absorbe el {capex_cfo*100:.0f}% de la caja operativa. "
+            "El DCF usa el margen FCF normalizado (neto de capex) y no premia la inversion hasta que "
+            "aparezca en ventas o margen; su resultado es conservador por construccion.")
 
     # --- senales de alerta mecanicas (umbrales visibles; senales, no acusaciones) ---
     flags = []
@@ -553,13 +596,16 @@ def compute_report(raw: dict) -> dict:
             "dcf_sensitivity": {"discounts": DCF_DISCOUNT_GRID, "terminals": DCF_TERMINAL_GRID,
                                 "grid": sens} if sens else None,
             "blend": blend,
-            "method": ("PER: BPA consenso proximo ejercicio x multiplos historicos propios "
-                       "(p25/mediana/p75); si la mediana historica supera 2,5 veces el PER "
-                       "forward actual se marca NO fiable (hipercrecimiento) y sale de la "
-                       "mezcla. DCF: margen FCF TTM sobre trayectoria de ventas (consenso "
-                       "ano 1 limitado a [-20%, +40%], desvanecimiento lineal a perpetuidad "
-                       "en 5 anos, descuento 9,5%, terminal 4%). Mezcla fija 60/40 cuando "
-                       "ambas patas son fiables. Objetivo a valor de hoy, sin dividendos."),
+            "method": ("Punto de partida 60% PER + 40% DCF; cada informe indica abajo que ajustes recibio y si sus patas concuerdan. "
+                       "PER: BPA consenso proximo ejercicio x multiplos historicos propios "
+                       "(p25/mediana/p75), acotados a 1/1,5-1,5 veces el PER forward actual "
+                       "(gradual, sin cortes: un multiplo historico de hipercrecimiento no puede "
+                       "dar mas de un 50% de re-rating). DCF deliberadamente conservador: margen FCF "
+                       "normalizado (media de TTM y ultimos 3 ejercicios, neto de capex, asi que el "
+                       "gasto en inversion cuesta nota), consenso de ventas ano 1 limitado a "
+                       "[-20%, +40%], desvanecimiento lineal a perpetuidad en 5 anos, descuento 9,5%, "
+                       "terminal 4%; el DCF queda a 0 de flujos si el margen normalizado es <= 0. "
+                       "Objetivo a valor de hoy, sin dividendos."),
         },
         "flags": flags,
         "limits": LIMITS,
