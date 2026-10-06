@@ -23,8 +23,8 @@ criterio (cruzar el 10-Q, juzgar riesgos) sigue haciéndose a mano.
 ## Cómo se ejecuta
 
 - Cada noche laborable sola (21:30 UTC) con la Action "Motor de analisis".
-- Un ticker suelto bajo demanda: pestaña Actions → "Actualizar dashboard" →
-  Run workflow → campo `ticker` (p. ej. `ARM`, aunque no esté en el universo).
+- Un ticker suelto bajo demanda: pestaña Actions → "Motor de analisis" → Run
+  workflow → campo `ticker` (p. ej. `ARM`, aunque no esté en el universo).
 - En local: `pip install yfinance pandas numpy` y
   `python scripts/generate_analysis.py`.
 
