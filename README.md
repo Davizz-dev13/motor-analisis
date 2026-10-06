@@ -17,12 +17,12 @@ criterio (cruzar el 10-Q, juzgar riesgos) sigue haciéndose a mano.
   `python scripts/generate_analysis.py --demo` escribe `/tmp/demo-analisis.html`.
 - `docs/analisis/index.html` — la página (los JSON de datos los genera la
   Action cada noche; no van en este paquete).
-- `.github/workflows/dashboard.yml` — workflow nocturno con el paso del motor
-  añadido tras el optimizador y `git add docs/analisis/`.
+- `.github/workflows/analysis.yml` — Action nocturna propia que regenera los
+  informes y los commitea (`docs/analisis/`).
 
 ## Cómo se ejecuta
 
-- Cada noche laborable sola, dentro de la Action existente (21:30 UTC).
+- Cada noche laborable sola (21:30 UTC) con la Action "Motor de analisis".
 - Un ticker suelto bajo demanda: pestaña Actions → "Actualizar dashboard" →
   Run workflow → campo `ticker` (p. ej. `ARM`, aunque no esté en el universo).
 - En local: `pip install yfinance pandas numpy` y
