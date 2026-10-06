@@ -1,0 +1,39 @@
+name: Motor de analisis
+
+on:
+  schedule:
+    # 21:30 UTC, de lunes a viernes: despues del cierre de EE.UU.
+    - cron: '30 21 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      ticker:
+        description: 'Ticker opcional: regenera solo ese informe'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  analisis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pandas numpy yfinance pyarrow
+      - name: Generar informes
+        run: |
+          if [ -n "${{ inputs.ticker }}" ]; then
+            python scripts/generate_analysis.py --only "${{ inputs.ticker }}"
+          else
+            python scripts/generate_analysis.py
+          fi
+      - name: Commit informes si hay cambios
+        run: |
+          git config user.name "Davizz-dev13"
+          git config user.email "Davizz-dev13@users.noreply.github.com"
+          git add docs/analisis/
+          git diff --cached --quiet || git commit -m "Informes de analisis: $(date -u +%Y-%m-%d)"
+          git push
